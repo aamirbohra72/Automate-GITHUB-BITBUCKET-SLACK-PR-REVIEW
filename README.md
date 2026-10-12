@@ -4,10 +4,31 @@ A long-running Node.js service that verifies GitHub and Bitbucket Cloud webhook 
 
 ## Architecture
 
-```text
-GitHub / Bitbucket -> Fastify + raw-body HMAC -> bounded queue -> normalized notifier
-                                                   |                    |
-                                                   +-> Neon Postgres <-+-> Slack Web API
+```mermaid
+flowchart LR
+    subgraph Providers[Webhook providers]
+        GitHub[GitHub]
+        Bitbucket[Bitbucket Cloud]
+    end
+
+    subgraph Service[Node.js service]
+        Fastify[Fastify routes<br/>raw-body HMAC verification]
+        Parsers[Provider parsers<br/>normalized PR events]
+        Queue[Bounded in-process queue]
+        Notifier[Notifier<br/>filters and channel routing]
+        SlackClient[Slack client<br/>retry and rate-limit handling]
+        Config[config.yaml<br/>repo routes and user map]
+        Fastify --> Parsers --> Queue --> Notifier --> SlackClient
+        Config --> Notifier
+    end
+
+    Database[(Neon Postgres<br/>delivery IDs and PR message references)]
+    Slack[Slack workspace<br/>parent messages and threads]
+    GitHub -->|signed webhook| Fastify
+    Bitbucket -->|signed webhook| Fastify
+    Notifier -->|claim delivery; lock PR; save reference| Database
+    SlackClient -->|post, reply, update| Slack
+    Fastify -->|GET /health| Database
 ```
 
 The same normalized event contract powers both provider parsers. A transaction-scoped Postgres advisory lock serializes first-message creation for each `(platform, repo, PR ID)`; delivery IDs are claimed with `ON CONFLICT DO NOTHING`. This protects against concurrent and repeated webhook deliveries, but an in-memory queue is not durable across process crashes.
