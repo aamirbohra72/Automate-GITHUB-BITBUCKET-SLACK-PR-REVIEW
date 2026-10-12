@@ -1,0 +1,18 @@
+{
+  "action": "opened",
+  "number": 42,
+  "pull_request": {
+    "number": 42,
+    "title": "Add invoice export",
+    "html_url": "https://github.com/acme/api/pull/42",
+    "body": "Adds CSV export for invoices.",
+    "draft": false,
+    "user": { "login": "octocat" },
+    "head": { "ref": "feature/export" },
+    "base": { "ref": "main" },
+    "requested_reviewers": [{ "login": "reviewer-one" }],
+    "requested_teams": []
+  },
+  "repository": { "full_name": "acme/api" },
+  "sender": { "login": "octocat" }
+}

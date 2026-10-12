@@ -1,0 +1,15 @@
+{
+  "pullrequest": {
+    "id": 17,
+    "title": "Improve search",
+    "description": "Adds indexed search.",
+    "draft": false,
+    "links": { "html": { "href": "https://bitbucket.org/acme/api/pull-requests/17" } },
+    "author": { "display_name": "Developer", "account_id": "dev-123" },
+    "source": { "branch": { "name": "feature/search" } },
+    "destination": { "branch": { "name": "main" } },
+    "reviewers": [{ "display_name": "Reviewer", "account_id": "reviewer-1" }]
+  },
+  "repository": { "full_name": "acme/api" },
+  "actor": { "display_name": "Developer", "account_id": "dev-123" }
+}

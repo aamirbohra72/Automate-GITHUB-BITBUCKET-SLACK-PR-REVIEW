@@ -1,0 +1,20 @@
+repos:
+  default:
+    channelId: C0123456789
+    notifyDrafts: false
+    ignoreAuthors:
+      - dependabot[bot]
+  acme/api:
+    channelId: C0123456789
+    events:
+      - opened
+      - reopened
+      - ready_for_review
+      - review_requested
+      - approved
+      - changes_requested
+      - merged
+      - declined
+      - comment_created
+userMap:
+  github-reviewer: U0123456789
