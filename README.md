@@ -5,33 +5,69 @@ A long-running Node.js service that verifies GitHub and Bitbucket Cloud webhook 
 ## Architecture
 
 ```mermaid
-flowchart LR
-    subgraph Providers[Webhook providers]
-        GitHub[GitHub]
-        Bitbucket[Bitbucket Cloud]
+flowchart TB
+    subgraph Providers["1 · Webhook providers"]
+        direction LR
+        GitHub["GitHub<br/>pull requests, reviews, comments"]
+        Bitbucket["Bitbucket Cloud<br/>pull request events"]
     end
 
-    subgraph Service[Node.js service]
-        Fastify[Fastify routes<br/>raw-body HMAC verification]
-        Parsers[Provider parsers<br/>normalized PR events]
-        Queue[Bounded in-process queue]
-        Notifier[Notifier<br/>filters and channel routing]
-        SlackClient[Slack client<br/>retry and rate-limit handling]
-        Config[config.yaml<br/>repo routes and user map]
-        Fastify --> Parsers --> Queue --> Notifier --> SlackClient
-        Config --> Notifier
+    subgraph Service["2 · Node.js 22 service · Fastify"]
+        direction TB
+        Routes["Webhook routes<br/>1 MiB body limit · 120 req/min"]
+        Verify["Verify raw-body HMAC-SHA256<br/>constant-time comparison"]
+        Parse["Parse provider payload<br/>ignore unsupported actions"]
+        Normalize["Normalize to PullRequestEvent"]
+        Queue["Bounded in-memory queue<br/>4 workers · 1,000 pending jobs"]
+        Notify["Notifier<br/>filters · repo/channel routing"]
+        SlackClient["Slack client<br/>retry · rate-limit handling"]
+        Config[".env + config.yaml<br/>secrets · repo routes · user map"]
+        Health["GET /health"]
+        Cleanup["Daily cleanup<br/>delivery records older than 7 days"]
+        Routes --> Verify --> Parse --> Normalize --> Queue --> Notify --> SlackClient
+        Config --> Notify
     end
 
-    Database[(Neon Postgres<br/>delivery IDs and PR message references)]
-    Slack[Slack workspace<br/>parent messages and threads]
-    GitHub -->|signed webhook| Fastify
-    Bitbucket -->|signed webhook| Fastify
-    Notifier -->|claim delivery; lock PR; save reference| Database
-    SlackClient -->|post, reply, update| Slack
-    Fastify -->|GET /health| Database
+    Database[("Neon Postgres<br/>processed_deliveries · pr_messages")]
+    Slack["Slack workspace<br/>channel parent messages · threaded replies"]
+    GitHub -->|signed POST| Routes
+    Bitbucket -->|signed POST| Routes
+    Verify -->|invalid signature: 401| Reject["Reject request"]
+    Notify -->|claim delivery ID<br/>ON CONFLICT DO NOTHING| Database
+    Notify -->|transaction advisory lock per PR<br/>load/save Slack message reference| Database
+    SlackClient -->|post · reply · update| Slack
+    Health -->|SELECT 1| Database
+    Cleanup -->|delete expired rows| Database
+
+    subgraph Build["3 · Build and release"]
+        direction LR
+        Source["TypeScript source<br/>src/ + config.yaml"] --> Install["npm ci"]
+        Install --> Checks["npm run lint<br/>npm test"]
+        Checks --> Compile["npm run build<br/>tsc → dist/"]
+        Compile --> Image["Docker multi-stage image<br/>production dependencies · non-root user"]
+        Image --> Run["Docker Compose or persistent host<br/>port 3000 · graceful shutdown"]
+        Schema["src/db/schema.ts + drizzle/ migrations"] -->|db:migrate<br/>DATABASE_URL_DIRECT| Database
+    end
+
+    classDef provider fill:#dbeafe,stroke:#2563eb,color:#172554,stroke-width:2px
+    classDef ingress fill:#fef3c7,stroke:#d97706,color:#451a03,stroke-width:2px
+    classDef worker fill:#dcfce7,stroke:#16a34a,color:#052e16,stroke-width:2px
+    classDef config fill:#fce7f3,stroke:#db2777,color:#500724,stroke-width:2px
+    classDef data fill:#cffafe,stroke:#0891b2,color:#083344,stroke-width:2px
+    classDef external fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:2px
+    classDef build fill:#ffedd5,stroke:#ea580c,color:#431407,stroke-width:2px
+    classDef reject fill:#fee2e2,stroke:#dc2626,color:#450a0a,stroke-width:2px
+    class GitHub,Bitbucket provider
+    class Routes,Verify,Parse,Normalize ingress
+    class Queue,Notify,SlackClient,Health,Cleanup worker
+    class Config config
+    class Database data
+    class Slack external
+    class Source,Install,Checks,Compile,Image,Run,Schema build
+    class Reject reject
 ```
 
-The same normalized event contract powers both provider parsers. A transaction-scoped Postgres advisory lock serializes first-message creation for each `(platform, repo, PR ID)`; delivery IDs are claimed with `ON CONFLICT DO NOTHING`. This protects against concurrent and repeated webhook deliveries, but an in-memory queue is not durable across process crashes.
+Both provider parsers produce the same normalized event contract. Delivery IDs are claimed with `ON CONFLICT DO NOTHING`, and a transaction-scoped Postgres advisory lock serializes Slack parent-message creation for each `(platform, repo, PR ID)`. The queue is in memory, so queued work is not durable across process crashes. Migrations run separately from app startup using the direct Neon URL; the running service uses the pooled URL.
 
 ## Requirements
 
@@ -49,12 +85,11 @@ Create a Neon project and database. Copy both connection strings from the connec
 ```sh
 cp .env.example .env
 # Set DATABASE_URL and DATABASE_URL_DIRECT in .env
-npm install
-npm run db:generate
+npm ci
 npm run db:migrate
 ```
 
-`db:generate` creates a migration from the Drizzle schema. Commit the generated migration with your deployment.
+The repository includes the initial Drizzle migration. When you change `src/db/schema.ts`, run `npm run db:generate`, review and commit the generated migration, then apply it with `npm run db:migrate`.
 
 ### 2. Slack
 
@@ -81,6 +116,21 @@ WEBHOOK_URL=https://<your-tunnel-host> GITHUB_WEBHOOK_SECRET=<same-secret> npm r
 ```
 
 In PowerShell, set `$env:WEBHOOK_URL` and `$env:GITHUB_WEBHOOK_SECRET` before running `npm run send-test-webhook`. The automated suite uses realistic fixture payloads and signs an HTTP request; `npm test` runs it locally. `npm run build` checks strict TypeScript compilation.
+
+### Build from source
+
+After completing the Neon and Slack configuration above:
+
+```sh
+npm ci
+npm run db:migrate
+npm run lint
+npm test
+npm run build
+npm start
+```
+
+`npm start` runs the compiled `dist/index.js` service. For watch mode during development, use `npm run dev` instead. To build and start the production container after setting `.env` and applying migrations, run `docker compose up --build -d`; Compose reads `.env`, publishes the configured port, and restarts the service unless stopped.
 
 ### 6. Deploy
 
